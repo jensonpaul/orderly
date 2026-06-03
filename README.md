@@ -72,3 +72,172 @@ or with logs and options:
 env RUST_LOG=info cargo run --bin orderly-client -- --port 50051
 ```
 
+---
+
+Daemon
+-----
+
+For a production-quality CentOS 9 systemd service running your Rust gRPC server, you'll generally want:
+
+* Dedicated service user
+* Fixed working directory
+* Environment variables managed separately
+* Automatic restart on failure
+* Resource limits
+* Logging to journald
+* Security hardening
+* Clean shutdown support
+
+Example assuming:
+
+* Binary: `/opt/orderly/bin/orderly-server`
+* User: `orderly`
+* Data/config directory: `/opt/orderly`
+* Listen port: `50051`
+* Symbol: `BTC/USD`
+
+First create the service account:
+
+```bash
+sudo useradd \
+  --system \
+  --home-dir /opt/orderly \
+  --shell /sbin/nologin \
+  orderly
+```
+
+Install your binary:
+
+```bash
+sudo mkdir -p /opt/orderly/bin
+sudo cp target/release/orderly-server /opt/orderly/bin/
+sudo chown -R orderly:orderly /opt/orderly
+```
+
+Create an environment file:
+
+```bash
+sudo mkdir -p /etc/orderly
+sudo vi /etc/orderly/orderly.env
+```
+
+Contents:
+
+```bash
+RUST_LOG=info
+SYMBOL=BTC/USD
+PORT=50051
+```
+
+Create the systemd unit:
+
+`/etc/systemd/system/orderly-server.service`
+
+```ini
+[Unit]
+Description=Orderly Rust gRPC Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+User=orderly
+Group=orderly
+
+WorkingDirectory=/opt/orderly
+
+EnvironmentFile=/etc/orderly/orderly.env
+
+Environment="RUST_LOG=info"
+Environment="SYMBOL=BTC/USD"
+Environment="PORT=50051"
+
+#ExecStart=/opt/orderly/bin/orderly-server \
+#    --symbol ${SYMBOL} \
+#    --port ${PORT}
+#ExecStart=/bin/bash -lc '/opt/orderly/bin/orderly-server --symbol "$SYMBOL" --port "$PORT"'
+
+ExecStart=/bin/bash -lc '/opt/orderly/bin/orderly-server --symbol BTC/USD --port 50051'
+
+Restart=on-failure
+RestartSec=5
+
+# Increase if your service opens many sockets/files
+LimitNOFILE=65535
+
+# Send logs to journald
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+# Writable paths if needed
+ReadWritePaths=/opt/orderly
+
+# Graceful shutdown
+TimeoutStopSec=30
+KillSignal=SIGINT
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start:
+
+```bash
+sudo systemctl daemon-reload
+
+sudo systemctl enable orderly-server
+
+sudo systemctl start orderly-server
+```
+
+Check status:
+
+```bash
+sudo systemctl status orderly-server
+```
+
+View logs:
+
+```bash
+journalctl -u orderly-server -f
+```
+
+If you want to run exactly the equivalent of:
+
+```bash
+RUST_LOG=info cargo run --bin orderly-server -- \
+    --symbol BTC/USD \
+    --port 50051
+```
+
+during development (not recommended for production), use:
+
+```ini
+ExecStart=/usr/bin/bash -c '
+export RUST_LOG=info
+cargo run --bin orderly-server -- \
+  --symbol "BTC/USD" \
+  --port 50051
+'
+```
+
+However, for production on CentOS 9, build with:
+
+```bash
+cargo build --release --bin orderly-server
+```
+
+and run the compiled binary directly, as shown in the first service definition. This avoids needing Cargo, Rust toolchains, and source code on the production host.
