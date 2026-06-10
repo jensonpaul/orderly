@@ -172,8 +172,8 @@ impl Exchanges {
                     .map(|l| (l.price, l))
                     .collect::<LevelsMap>();
 
-                self.kraken.bids.extend_and_keep(bids, 10);
-                self.kraken.asks.extend_and_keep(asks, 10);
+                self.kraken.bids.extend_and_keep_top(bids, 10);
+                self.kraken.asks.extend_and_keep_bottom(asks, 10);
             },
             Exchange::Coinbase => {
                 let bids = t.bids.into_iter()
@@ -183,8 +183,8 @@ impl Exchanges {
                     .map(|l| (l.price, l))
                     .collect::<LevelsMap>();
 
-                self.coinbase.bids.extend_and_keep(bids, 10);
-                self.coinbase.asks.extend_and_keep(asks, 10);
+                self.coinbase.bids.extend_and_keep_top(bids, 10);
+                self.coinbase.asks.extend_and_keep_bottom(asks, 10);
             }
         }
     }
@@ -196,7 +196,7 @@ impl Exchanges {
                 .merge(self.binance.bids.clone())
                 .merge_map(self.kraken.bids.clone())
                 .merge_map(self.coinbase.bids.clone())
-                .into_iter().rev().take(10)
+                .into_iter().rev()
                 .collect();
 
         let asks: Vec<Level> =
@@ -204,7 +204,7 @@ impl Exchanges {
                 .merge(self.binance.asks.clone())
                 .merge_map(self.kraken.asks.clone())
                 .merge_map(self.coinbase.asks.clone())
-                .into_iter().take(10)
+                .into_iter()
                 .collect();
 
         let spread = match (bids.first(), asks.first()) {
@@ -249,21 +249,31 @@ impl OrderDepthsMap {
 }
 
 trait ExtendAndKeep {
-    fn extend_and_keep(
-        &mut self,
-        other: LevelsMap,
-        index: usize,
-    );
+    /// Keep the `depth` highest-priced entries (used for bids: best bid = highest price).
+    fn extend_and_keep_top(&mut self, other: LevelsMap, depth: usize);
+    /// Keep the `depth` lowest-priced entries (used for asks: best ask = lowest price).
+    fn extend_and_keep_bottom(&mut self, other: LevelsMap, depth: usize);
 }
 
 impl ExtendAndKeep for LevelsMap {
-    /// Merges two `BTreeMap`. Returns everything before the given index.
-    fn extend_and_keep(&mut self, other: LevelsMap, i: usize) {
+    fn extend_and_keep_top(&mut self, other: LevelsMap, depth: usize) {
         self.extend(other);
-        self.retain(|_k, v| !v.amount.eq(&dec!(0))); // remove where volume is 0
-        if self.len() > i {
-            let key = self.keys().collect::<Vec<&Decimal>>()[i].clone();
-            self.split_off(&key);
+        // Remove zero-volume levels (exchange signals level deletion with amount=0).
+        self.retain(|_, v| !v.amount.eq(&dec!(0)));
+        // BTreeMap is ascending; drop the lowest-priced entries until we have `depth` left.
+        while self.len() > depth {
+            let key = *self.keys().next().unwrap();
+            self.remove(&key);
+        }
+    }
+
+    fn extend_and_keep_bottom(&mut self, other: LevelsMap, depth: usize) {
+        self.extend(other);
+        self.retain(|_, v| !v.amount.eq(&dec!(0)));
+        // Drop the highest-priced entries until we have `depth` left.
+        while self.len() > depth {
+            let key = *self.keys().next_back().unwrap();
+            self.remove(&key);
         }
     }
 }

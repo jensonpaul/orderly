@@ -603,9 +603,9 @@ enum SubscriptionType {
     AllAvailable,
 }
 
-pub(crate) async fn connect(symbol: &String) -> Result<websocket::WsStream, Error> {
+pub(crate) async fn connect_ws(symbol: String) -> Result<websocket::WsStream, Error> {
     let mut ws_stream = websocket::connect(KRAKEN_WS_URL).await?;
-    subscribe(&mut ws_stream, symbol).await?;
+    subscribe(&mut ws_stream, &symbol).await?;
     Ok(ws_stream)
 }
 

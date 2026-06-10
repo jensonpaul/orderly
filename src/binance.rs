@@ -39,7 +39,7 @@ impl ToTick for Event {
     }
 }
 
-pub(crate) async fn connect(symbol: &String) -> Result<websocket::WsStream, Error> {
+pub(crate) async fn connect_ws(symbol: String) -> Result<websocket::WsStream, Error> {
     let depth = 10;
     let symbol = symbol.to_lowercase().replace("/", "");
     let url = format!("{}/{}@depth{}@100ms", BINANCE_WS_URL, symbol, depth);

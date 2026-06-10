@@ -22,8 +22,8 @@ impl OrderBookService {
         OrderBookService { out_ticks }
     }
 
-    pub(crate) async fn serve(self, port: usize) -> Result<(), Error>{
-        let addr = format!("[::1]:{}", port);
+    pub(crate) async fn serve(self, port: u16) -> Result<(), Error>{
+        let addr = format!("0.0.0.0:{}", port);
         let addr = addr.parse()?;
 
         info!("Serving grpc at {}", addr);

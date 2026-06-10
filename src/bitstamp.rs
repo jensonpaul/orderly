@@ -88,9 +88,9 @@ impl ToLevel for Level {
 
 type Channel = String;
 
-pub(crate) async fn connect(symbol: &String) -> Result<websocket::WsStream, Error> {
+pub(crate) async fn connect_ws(symbol: String) -> Result<websocket::WsStream, Error> {
     let mut ws_stream = websocket::connect(BITSTAMP_WS_URL).await?;
-    subscribe(&mut ws_stream, symbol).await?;
+    subscribe(&mut ws_stream, &symbol).await?;
     Ok(ws_stream)
 }
 
@@ -138,7 +138,7 @@ fn serialize(e: Event) -> serde_json::Result<String> {
 
 mod timestamp {
     use std::str::FromStr;
-    use chrono::{DateTime, Utc, TimeZone};
+    use chrono::{DateTime, TimeZone, Utc};
     use serde::{self, Deserialize, Serializer, Deserializer};
 
     pub fn serialize<S>(date: &DateTime<Utc>, serializer: S) -> Result<S::Ok, S::Error>
@@ -151,34 +151,40 @@ mod timestamp {
         where D: Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        let datetime = Utc.timestamp(i64::from_str(&s).map_err(serde::de::Error::custom)?, 0);
-        Ok(datetime)
+        let secs = i64::from_str(&s).map_err(serde::de::Error::custom)?;
+        Utc.timestamp_opt(secs, 0)
+            .single()
+            .ok_or_else(|| serde::de::Error::custom("invalid or ambiguous timestamp"))
     }
 }
 
 mod microtimestamp {
     use std::str::FromStr;
-    use chrono::{DateTime, Utc, TimeZone};
+    use chrono::{DateTime, TimeZone, Utc};
     use serde::{self, Deserialize, Serializer, Deserializer};
 
     pub fn serialize<S>(date: &DateTime<Utc>, serializer: S) -> Result<S::Ok, S::Error>
         where S: Serializer,
     {
-        serializer.serialize_i64(date.timestamp_nanos()/1000)
+        serializer.serialize_i64(date.timestamp_nanos() / 1000)
     }
 
     pub fn deserialize<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
         where D: Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        let datetime = Utc.timestamp_nanos(i64::from_str(&s).map_err(serde::de::Error::custom)?*1000);
-        Ok(datetime)
+        let micros = i64::from_str(&s).map_err(serde::de::Error::custom)?;
+        let secs  = micros / 1_000_000;
+        let nanos = ((micros % 1_000_000) * 1000) as u32;
+        Utc.timestamp_opt(secs, nanos)
+            .single()
+            .ok_or_else(|| serde::de::Error::custom("invalid or ambiguous microtimestamp"))
     }
 }
 
 #[cfg(test)]
 mod test {
-    use chrono::TimeZone;
+    use chrono::{TimeZone as _, Utc};
     use rust_decimal_macros::dec;
     use crate::bitstamp::*;
 
@@ -196,8 +202,8 @@ mod test {
                    }".to_string())?,
                    Event::Data{
                        data: InData {
-                           timestamp: Utc.timestamp(1652103479, 0),
-                           microtimestamp: Utc.timestamp_nanos(1652103479857383000),
+                           timestamp: Utc.timestamp_opt(1652103479, 0).unwrap(),
+                           microtimestamp: Utc.timestamp_opt(1652103479, 857_383_000).unwrap(),
                            bids: vec![
                                Level { price: dec!(0.07295794), amount: dec!(0.46500000) },
                                Level { price: dec!(0.07295284), amount: dec!(0.60423006) },

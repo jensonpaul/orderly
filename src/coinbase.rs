@@ -434,9 +434,9 @@ impl ToTick for Event {
     }
 }
 
-pub(crate) async fn connect(symbol: &String) -> Result<websocket::WsStream, Error> {
+pub(crate) async fn connect_ws(symbol: String) -> Result<websocket::WsStream, Error> {
     let mut ws_stream = websocket::connect(COINBASE_WS_URL).await?;
-    subscribe(&mut ws_stream, symbol).await?;
+    subscribe(&mut ws_stream, &symbol).await?;
     Ok(ws_stream)
 }
 
@@ -491,7 +491,7 @@ fn serialize(e: Event) -> serde_json::Result<String> {
 }
 
 mod timestamp {
-    use chrono::{DateTime, Utc, TimeZone};
+    use chrono::{DateTime, Utc};
     use serde::{self, Deserialize, Serializer, Deserializer};
 
     pub fn serialize<S>(date: &DateTime<Utc>, serializer: S) -> Result<S::Ok, S::Error>
@@ -504,8 +504,8 @@ mod timestamp {
         where D: Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        let datetime = Utc.datetime_from_str(&s, "%+").map_err(serde::de::Error::custom)?;  // "2014-11-07T08:19:28.464459Z"
-        Ok(datetime)
+        // Parse ISO-8601 / RFC-3339 strings like "2014-11-07T08:19:28.464459Z"
+        s.parse::<DateTime<Utc>>().map_err(serde::de::Error::custom)
     }
 }
 

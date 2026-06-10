@@ -5,6 +5,6 @@ mod error;
 mod grpc;
 mod kraken;
 mod orderbook;
-mod stdin;
 mod websocket;
+mod worker;
 pub mod orderly;
