@@ -1,11 +1,15 @@
 use std::fmt;
 
+/// All errors that can originate inside the `orderly` library.
 #[derive(Debug)]
 pub enum Error {
+    /// A WebSocket transport or protocol error.
     BadConnection(tungstenite::Error),
+    /// A JSON deserialisation error.
     BadData(serde_json::Error),
+    /// An OS-level I/O error.
     IoError(std::io::Error),
-    ServerError(tonic::transport::Error),
+    /// An invalid socket address string.
     BadAddr(std::net::AddrParseError),
 }
 
@@ -15,7 +19,6 @@ impl fmt::Display for Error {
             Error::BadConnection(e) => write!(f, "WebSocket connection error: {e}"),
             Error::BadData(e)       => write!(f, "Data parse error: {e}"),
             Error::IoError(e)       => write!(f, "I/O error: {e}"),
-            Error::ServerError(e)   => write!(f, "gRPC server error: {e}"),
             Error::BadAddr(e)       => write!(f, "Address parse error: {e}"),
         }
     }
@@ -33,10 +36,6 @@ impl From<serde_json::Error> for Error {
 
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Self { Self::IoError(e) }
-}
-
-impl From<tonic::transport::Error> for Error {
-    fn from(e: tonic::transport::Error) -> Self { Self::ServerError(e) }
 }
 
 impl From<std::net::AddrParseError> for Error {

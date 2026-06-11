@@ -2,33 +2,26 @@
 name = "orderly"
 version = "0.2.0"
 edition = "2021"
+description = "Transport-agnostic merged order book aggregator for crypto exchanges."
+license = "MIT"
+
+[lib]
+name = "orderly"
+path = "src/lib.rs"
 
 [dependencies]
-async-stream        = "0.3"
 chrono              = { version = "0.4", features = ["serde"] }
-clap                = { version = "4", features = ["derive", "env"] }
-env_logger          = "0.11"
 futures             = "0.3"
 log                 = "0.4"
-prost               = "0.13"
 rust_decimal        = "1"
 rust_decimal_macros = "1"
 serde               = { version = "1", features = ["derive"] }
 serde_json          = "1"
-tokio               = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tokio               = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync"] }
 tokio-tungstenite   = { version = "0.24", features = ["native-tls"] }
-tonic               = "0.12"
+tokio-util          = { version = "0.7", features = ["rt"] }
 tungstenite         = "0.24"
 url                 = "2"
 
-[[bin]]
-name = "orderly-server"
-path = "src/main.rs"
-
-[[bin]]
-name = "orderly-client"
-path = "src/client.rs"
-
-[build-dependencies]
-tonic-build = "0.12"
-protoc-bin-vendored = "3"
+[dev-dependencies]
+env_logger = "0.11"

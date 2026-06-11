@@ -1,243 +1,250 @@
-
 # orderly
 
-A Rust CLI WebSocket client for crypto exchanges. 
-Connects to the WebSocket feeds of multiple exchanges. 
-Subscribes to the live order book for the given currency pair.
-Publishes a merged order book as a gRPC stream.
+A transport-agnostic, merged order book aggregator for crypto exchanges.
 
-<img src="https://user-images.githubusercontent.com/1086619/170038125-8a4ed933-9cec-4a7a-9085-2dd806ca0307.gif" />
+`orderly` connects to the WebSocket feeds of **Bitstamp**, **Binance**, **Kraken**, and **Coinbase** simultaneously, maintains per-exchange order book depth, and continuously publishes a single merged `OutTick` via a [`tokio::sync::watch`](https://docs.rs/tokio/latest/tokio/sync/watch/index.html) channel. The caller owns the transport layer entirely — pipe the output into gRPC, REST, WebSocket, a database, or anything else.
 
-Currently supports: 
+---
 
-* Bitstamp WebSocket: `wss://ws.bitstamp.net`
-* Binance WebSocket: `wss://stream.binance.com:9443/ws`
-* Kraken WebSocket: `wss://ws.kraken.com`
-* Coinbase WebSocket: `wss://ws-feed.exchange.coinbase.com`
+## Features
 
-```
-USAGE:
-    orderly-server [OPTIONS]
+- **Four exchanges, always on** — Bitstamp, Binance, Kraken, and Coinbase run concurrently with no per-exchange flags.
+- **Auto-reconnect with exponential backoff** — each worker reconnects independently on disconnect, parse error, or stale connection (capped at 60 s).
+- **Application-level heartbeat** — a ping is sent every 15 s; connections stale for more than 30 s are dropped and restarted.
+- **Clean shutdown** — `EngineHandle::shutdown()` cancels all workers and the aggregator and awaits their completion.
+- **No transport lock** — the library produces a `watch::Receiver<OutTick>`. What you do with it is entirely up to the caller.
+- **Decimal precision** — all prices and amounts are [`rust_decimal::Decimal`](https://docs.rs/rust_decimal), with no floating-point rounding.
 
-OPTIONS:
-    -h, --help               Print help information
-        --no-binance         (Optional) Don't show Binance in gRPC stream. Default: false
-        --no-bitstamp        (Optional) Don't show Bitstamp in gRPC stream. Default: false
-        --no-kraken          (Optional) Don't show Kraken in gRPC stream. Default: false
-        --no-coinbase        (Optional) Don't show Coinbase in gRPC stream. Default: false
-    -p, --port <PORT>        (Optional) Port number on which the the gRPC server will be hosted.
-                             Default: 50051
-    -s, --symbol <SYMBOL>    (Optional) Currency pair to subscribe to. Default: ETH/BTC
+---
+
+## Quick start
+
+Add the crate to your `Cargo.toml`:
+
+```toml
+[dependencies]
+orderly = { path = "../orderly" }   # or version = "0.3" once published
+tokio   = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-Run gRPC server:
+Then start the engine:
 
-```
-cargo run --bin orderly-server
-```
-or with logs and options:
-```
-env RUST_LOG=info cargo run --bin orderly-server -- --symbol ETH/BTC --port 50051
-```
-Exclude certain exchanges:
+```rust
+use orderly::{OrderlyEngine, OutTick};
 
-```
-cargo run --bin orderly-server -- --no-binance --no-bitstamp
-```
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = OrderlyEngine::new("ETH/BTC");
+    let (handle, mut rx) = engine.start().await?;
 
-Client
------
+    while rx.changed().await.is_ok() {
+        let tick: OutTick = rx.borrow().clone();
+        println!(
+            "spread={:.8}  best_bid={:.8}  best_ask={:.8}",
+            tick.spread,
+            tick.bids.first().map(|l| l.price).unwrap_or_default(),
+            tick.asks.first().map(|l| l.price).unwrap_or_default(),
+        );
+    }
 
-Connects to the gRPC server and streams the orderbook summary.
-
-<img src="https://user-images.githubusercontent.com/1086619/169551698-3d59df5d-73db-47a3-a84d-cb0d2d0dd678.jpg" width="700"/>
-
-```
-USAGE:
-    orderly-client [OPTIONS]
-
-OPTIONS:
-    -h, --help           Print help information
-    -p, --port <PORT>    (Optional) Port number of the gRPC server. Default: 50051
-```
-
-Run gRPC client:
-
-```
-cargo run --bin orderly-client
-```
-or with logs and options:
-
-```
-env RUST_LOG=info cargo run --bin orderly-client -- --port 50051
+    handle.shutdown().await;
+    Ok(())
+}
 ```
 
 ---
 
-Daemon
------
+## API reference
 
-For a production-quality CentOS 9 systemd service running your Rust gRPC server, you'll generally want:
+### `OrderlyEngine`
 
-* Dedicated service user
-* Fixed working directory
-* Environment variables managed separately
-* Automatic restart on failure
-* Resource limits
-* Logging to journald
-* Security hardening
-* Clean shutdown support
+```rust
+pub struct OrderlyEngine { /* ... */ }
 
-Example assuming:
+impl OrderlyEngine {
+    /// Creates an engine for the given trading pair (e.g. "ETH/BTC", "BTC/USD").
+    pub fn new(symbol: impl Into<String>) -> Self;
 
-* Binary: `/opt/orderly/bin/orderly-server`
-* User: `orderly`
-* Data/config directory: `/opt/orderly`
-* Listen port: `50051`
-* Symbol: `BTC/USD`
+    /// Spawns all exchange workers and the aggregator.
+    /// Returns an (EngineHandle, watch::Receiver<OutTick>) pair.
+    pub async fn start(self) -> Result<(EngineHandle, watch::Receiver<OutTick>), Error>;
+}
+```
 
-First create the service account:
+`start()` is non-blocking — it spawns background tasks and returns immediately. The `watch::Receiver` begins with an empty `OutTick` and is updated in-place as ticks arrive from any exchange.
+
+### `EngineHandle`
+
+```rust
+pub struct EngineHandle { /* ... */ }
+
+impl EngineHandle {
+    /// Cancels all workers and the aggregator, then waits for them to finish.
+    pub async fn shutdown(mut self);
+}
+```
+
+Dropping `EngineHandle` without calling `shutdown()` will abort the background tasks. For clean teardown always call `shutdown()`.
+
+### `OutTick`
+
+```rust
+pub struct OutTick {
+    /// Best-ask price minus best-bid price.
+    pub spread: Decimal,
+    /// Up to 10 bids merged across all exchanges, highest price first.
+    pub bids: Vec<Level>,
+    /// Up to 10 asks merged across all exchanges, lowest price first.
+    pub asks: Vec<Level>,
+}
+```
+
+The watch channel always holds the most recent value. Use `rx.borrow()` for a non-blocking read of the latest tick, or `rx.changed().await` to wait for the next update.
+
+### `Level`
+
+```rust
+pub struct Level {
+    pub side:     Side,
+    pub price:    Decimal,
+    pub amount:   Decimal,
+    pub exchange: Exchange,
+}
+```
+
+Each level carries its originating exchange so consumers can attribute depth.
+
+### `Exchange`
+
+```rust
+pub enum Exchange {
+    Bitstamp,
+    Binance,
+    Kraken,
+    Coinbase,
+}
+```
+
+Implements `Display` (`"bitstamp"`, `"binance"`, `"kraken"`, `"coinbase"`), `Clone`, `Ord`, and `PartialOrd`.
+
+### `Side`
+
+```rust
+pub enum Side { Bid, Ask }
+```
+
+### `error::Error`
+
+```rust
+pub enum Error {
+    BadConnection(tungstenite::Error),
+    BadData(serde_json::Error),
+    IoError(std::io::Error),
+    BadAddr(std::net::AddrParseError),
+}
+```
+
+Implements `std::error::Error` and `Display`. All four variants have `From` conversions.
+
+---
+
+## How it works
+
+```
+┌──────────────┐   InTick    ┌─────────────┐   OutTick   ┌──────────────────┐
+│  Bitstamp WS ├────────────►│             ├────────────►│                  │
+│  Binance  WS ├────────────►│  Aggregator │  watch::    │  Your transport  │
+│  Kraken   WS ├────────────►│             │  Sender     │  (gRPC / REST /  │
+│  Coinbase WS ├────────────►│             │             │   DB / stdout)   │
+└──────────────┘  mpsc(256)  └─────────────┘             └──────────────────┘
+```
+
+1. **Workers** — one `tokio` task per exchange. Each opens a WebSocket, subscribes to the order book for the requested symbol, parses incoming messages into `InTick` structs, and forwards them over a bounded `mpsc` channel (capacity 256). On any error the worker reconnects with exponential backoff (1 s → 2 s → 4 s … → 60 s cap).
+
+2. **Aggregator** — a single task that receives `InTick`s, calls `Exchanges::update()`, computes a new merged `OutTick`, and sends it to the `watch` channel. Bitstamp and Binance replace their full snapshot on every tick. Kraken and Coinbase use an incremental diff protocol — zero-amount levels are interpreted as deletions.
+
+3. **Merge logic** — bids from all four exchanges are merged and sorted descending by price (ties broken by amount descending); asks are merged and sorted ascending by price (ties broken by amount ascending). The top 10 levels from each side are returned. Spread is `best_ask.price − best_bid.price`.
+
+4. **Cancellation** — `EngineHandle` holds a `CancellationToken`. Calling `shutdown()` fires the token, which races against the `tokio::select!` in every worker and the aggregator. `shutdown()` then joins all tasks before returning.
+
+---
+
+## Symbol format
+
+Symbols are passed as-is to each exchange connector, which applies the exchange-specific normalisation internally (e.g. `"ETH/BTC"` → `"ethbtc"` for Binance, `"eth_btc"` for Bitstamp). Refer to each exchange's connector source for supported pair formats.
+
+---
+
+## Logging
+
+The library uses the [`log`](https://docs.rs/log) facade. Wire up any compatible backend in your application:
+
+```toml
+[dev-dependencies]
+env_logger = "0.11"
+```
+
+```rust
+env_logger::init();  // RUST_LOG=orderly=debug cargo run
+```
+
+Log levels used:
+
+| Level   | When                                                        |
+|---------|-------------------------------------------------------------|
+| `info`  | Worker connecting / connected                               |
+| `warn`  | Worker unexpected exit, aggregator stopping, all WS closed  |
+| `error` | Parse or send errors inside a worker loop                   |
+| `debug` | Every `InTick` and `OutTick` (verbose — dev only)           |
+
+---
+
+## Consuming `OutTick` with your own transport
+
+Because the library output is a plain `watch::Receiver`, plugging in a transport is a matter of reading the receiver in your own task:
+
+**gRPC (tonic)**
+```rust
+let (handle, rx) = OrderlyEngine::new("ETH/BTC").start().await?;
+tokio::spawn(async move {
+    // Pass rx into your tonic service and call rx.borrow() per RPC request,
+    // or rx.changed().await in a server-streaming handler.
+});
+```
+
+**REST (axum)**
+```rust
+let (handle, rx) = OrderlyEngine::new("ETH/BTC").start().await?;
+let app = Router::new()
+    .route("/orderbook", get(move || async move {
+        let tick = rx.borrow().clone();
+        Json(tick)
+    }));
+```
+
+**WebSocket broadcast**
+```rust
+let (tx, _) = broadcast::channel::<OutTick>(16);
+let tx_clone = tx.clone();
+tokio::spawn(async move {
+    while rx.changed().await.is_ok() {
+        let _ = tx_clone.send(rx.borrow().clone());
+    }
+});
+```
+
+---
+
+## Running the tests
 
 ```bash
-sudo useradd \
-  --system \
-  --home-dir /opt/orderly \
-  --shell /sbin/nologin \
-  orderly
+cargo test
 ```
 
-Install your binary:
+All tests are unit tests within `src/orderbook.rs` covering the merge logic, per-exchange snapshot handling, incremental diff deletion (Kraken/Coinbase), and spread calculation. No network access is required.
 
-```bash
-sudo mkdir -p /opt/orderly/bin
-sudo cp target/release/orderly-server /opt/orderly/bin/
-sudo chown -R orderly:orderly /opt/orderly
-```
+---
 
-Create an environment file:
+## License
 
-```bash
-sudo mkdir -p /etc/orderly
-sudo vi /etc/orderly/orderly.env
-```
-
-Contents:
-
-```bash
-RUST_LOG=info
-SYMBOL=BTC/USD
-PORT=50051
-```
-
-Create the systemd unit:
-
-`/etc/systemd/system/orderly-server.service`
-
-```ini
-[Unit]
-Description=Orderly Rust gRPC Server
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-
-User=orderly
-Group=orderly
-
-WorkingDirectory=/opt/orderly
-
-EnvironmentFile=/etc/orderly/orderly.env
-
-Environment="RUST_LOG=info"
-Environment="SYMBOL=BTC/USD"
-Environment="PORT=50051"
-
-#ExecStart=/opt/orderly/bin/orderly-server \
-#    --symbol ${SYMBOL} \
-#    --port ${PORT}
-#ExecStart=/bin/bash -lc '/opt/orderly/bin/orderly-server --symbol "$SYMBOL" --port "$PORT"'
-
-ExecStart=/bin/bash -lc '/opt/orderly/bin/orderly-server --symbol BTC/USD --port 50051'
-
-Restart=on-failure
-RestartSec=5
-
-# Increase if your service opens many sockets/files
-LimitNOFILE=65535
-
-# Send logs to journald
-StandardOutput=journal
-StandardError=journal
-
-# Security hardening
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
-RestrictSUIDSGID=true
-LockPersonality=true
-MemoryDenyWriteExecute=true
-
-# Writable paths if needed
-ReadWritePaths=/opt/orderly
-
-# Graceful shutdown
-TimeoutStopSec=30
-KillSignal=SIGINT
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Enable and start:
-
-```bash
-sudo systemctl daemon-reload
-
-sudo systemctl enable orderly-server
-
-sudo systemctl start orderly-server
-```
-
-Check status:
-
-```bash
-sudo systemctl status orderly-server
-```
-
-View logs:
-
-```bash
-journalctl -u orderly-server -f
-```
-
-If you want to run exactly the equivalent of:
-
-```bash
-RUST_LOG=info cargo run --bin orderly-server -- \
-    --symbol BTC/USD \
-    --port 50051
-```
-
-during development (not recommended for production), use:
-
-```ini
-ExecStart=/usr/bin/bash -c '
-export RUST_LOG=info
-cargo run --bin orderly-server -- \
-  --symbol "BTC/USD" \
-  --port 50051
-'
-```
-
-However, for production on CentOS 9, build with:
-
-```bash
-cargo build --release --bin orderly-server
-```
-
-and run the compiled binary directly, as shown in the first service definition. This avoids needing Cargo, Rust toolchains, and source code on the production host.
+MIT
