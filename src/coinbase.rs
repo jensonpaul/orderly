@@ -460,7 +460,7 @@ async fn subscribe (
 
 pub(crate) fn parse(msg: Message) -> Result<Option<InTick>, Error> {
     let e = match msg {
-        Message::Binary(x) => { info!("binary {:?}", x); None },
+        Message::Binary(x) => { debug!("binary {:?}", x); None },
         Message::Text(x) => {
             debug!("{:?}", x);
 
@@ -469,15 +469,15 @@ pub(crate) fn parse(msg: Message) -> Result<Option<InTick>, Error> {
                 Event::Ticker { .. } => debug!("{:?}", e),
                 Event::Snapshot { .. } => debug!("{:?}", e),
                 Event::L2Update { .. } => debug!("{:?}", e),
-                _ => info!("{:?}", e),
+                _ => debug!("{:?}", e),
             }
 
             Some(e)
         },
-        Message::Ping(x) => { info!("Ping {:?}", x); None },
-        Message::Pong(x) => { info!("Pong {:?}", x); None },
-        Message::Close(x) => { info!("Close {:?}", x); None },
-        Message::Frame(x) => { info!("Frame {:?}", x); None },
+        Message::Ping(x) => { debug!("Ping {:?}", x); None },
+        Message::Pong(x) => { debug!("Pong {:?}", x); None },
+        Message::Close(x) => { debug!("Close {:?}", x); None },
+        Message::Frame(x) => { debug!("Frame {:?}", x); None },
     };
     Ok(e.map(|e| e.maybe_to_tick()).flatten())
 }
